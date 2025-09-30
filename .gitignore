@@ -9,5 +9,6 @@ wheels/
 # venv
 .venv
 
-# pt
+# pt, jpg
 *.pt
+*.jpg
