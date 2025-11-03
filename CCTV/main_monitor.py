@@ -22,7 +22,7 @@ LOW_FPS_DIR = "CCTV/recordings_low"
 HIGH_FPS = 5.0
 HIGH_FPS_WRITE_INTERVAL = 1.0 / HIGH_FPS
 HIGH_FPS_DURATION = 20
-HIGH_FPS_DIR = "CCTV/ecordings_high"
+HIGH_FPS_DIR = "CCTV/recordings_high"
 
 # --- 4. YOLO (ultralytics) の設定 ---
 COREML_MODEL_PATH = 'CCTV/yolov8n.mlpackage'
@@ -57,8 +57,16 @@ def run_yolo_ane(frame, model):
     """
     person_detected = False
     
-    # Core MLモデル(.mlpackage)を使う場合、'device'指定は不要
-    results = model.predict(frame, classes=[TARGET_CLASS_ID], verbose=False)
+    # ★★★ 信頼度の閾値を設定 ★★★
+    CONF_THRESHOLD = 0.5 
+    
+    results = model.predict(
+        frame,
+        classes=[TARGET_CLASS_ID],
+        conf=CONF_THRESHOLD,  # 閾値を指定
+        verbose=False
+    )
+    
     result = results[0]
 
     if len(result.boxes) > 0:
@@ -83,7 +91,7 @@ def main():
     print(f"[INFO] Neural Engine (ANE) 用のCore MLモデル ({COREML_MODEL_PATH}) を読み込みます...")
     try:
         global model
-        model = YOLO(COREML_MODEL_PATH)
+        model = YOLO(COREML_MODEL_PATH, task='detect') # 変更：モデルのタスクを明示
         print("[INFO] Core MLモデル読み込み完了。")
     except Exception as e:
         print(f"[ERROR] Core MLモデル '{COREML_MODEL_PATH}' の読み込みに失敗しました。")
