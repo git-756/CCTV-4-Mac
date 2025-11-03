@@ -1,4 +1,4 @@
-# main_monitor_discord.py
+# main_monitor_discord_v2.py
 import cv2
 import time
 import datetime
@@ -52,7 +52,6 @@ os.makedirs(HIGH_FPS_DIR, exist_ok=True)
 # --- 7. Discord Bot 設定 ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-# チャンネルIDは整数(int)で取得
 try:
     DISCORD_CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID"))
 except (ValueError, TypeError):
@@ -70,11 +69,9 @@ def start_discord_bot():
     """Discord Botを起動し、別スレッドのイベントループで実行する"""
     global bot_loop, bot_client
     
-    # 新しいイベントループをこのスレッド用に作成
     bot_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(bot_loop)
 
-    # Botのクライアントを初期化 (ファイル送信権限のみ)
     intents = discord.Intents.default()
     bot_client = discord.Client(intents=intents)
 
@@ -83,12 +80,16 @@ def start_discord_bot():
         print(f"\n[INFO] Discord Botがバックグラウンドで起動しました。({bot_client.user})\n")
 
     try:
-        # bot_loopでBotを起動 (メインスレッドをブロックしない)
         bot_loop.run_until_complete(bot_client.start(DISCORD_TOKEN))
     except discord.errors.LoginFailure:
         print("[ERROR] Discordトークンが無効です。")
     except Exception as e:
-        print(f"[ERROR] Discord Botスレッドでエラー: {e}")
+        # ループが停止したとき
+        if bot_loop.is_running():
+            print(f"[ERROR] Discord Botスレッドでエラー: {e}")
+            
+    print("[INFO] Discord Botスレッドが終了しました。")
+
 
 async def async_send_file(filepath):
     """(非同期) 実際のファイル送信処理"""
@@ -118,14 +119,27 @@ async def async_send_file(filepath):
     except Exception as e:
         print(f"[ERROR] Discordファイル送信中にエラー: {e}")
 
-def send_discord_video(filepath):
-    """(同期) メインスレッドから呼び出す関数"""
-    if bot_loop and bot_client.is_ready():
+def send_discord_video(filepath, wait_for_completion=False):
+    """
+    (同期) メインスレッドから呼び出す関数
+    wait_for_completion=True の場合、送信が完了するまで待機する
+    """
+    if bot_loop and bot_client and bot_client.is_ready():
         # メインスレッドから、Botスレッドのイベントループへタスクを投入
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             async_send_file(filepath),
             bot_loop
         )
+        
+        if wait_for_completion:
+            print("[INFO] Discordへの最終送信が完了するのを待機しています...")
+            try:
+                # タイムアウト (例: 30秒)
+                future.result(timeout=30.0)
+                print("[INFO] 最終送信が完了しました。")
+            except Exception as e:
+                print(f"[WARN] 最終送信の待機中にエラー/タイムアウト: {e}")
+                future.cancel()
     else:
         print("[WARN] Discord Botがまだ準備できていないため、送信をスキップしました。")
 
@@ -135,9 +149,7 @@ def send_discord_video(filepath):
 # -----------------------------------------------
 
 def create_new_writer(directory, prefix, fps, width, height):
-    """
-    VideoWriterとファイル名を返すように変更
-    """
+    """VideoWriterとファイル名を返す"""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = os.path.join(directory, f"{prefix}_{timestamp}.mp4")
     print(f"[INFO] 新しい録画ファイルを作成: {filename} ({fps} FPS)")
@@ -145,7 +157,6 @@ def create_new_writer(directory, prefix, fps, width, height):
         writer = cv2.VideoWriter(filename, FOURCC, fps, (width, height))
         if not writer.isOpened():
             raise IOError(f"VideoWriterが開けません: {filename}")
-        # writer と filename の両方を返す
         return writer, filename
     except Exception as e:
         print(f"[ERROR] VideoWriterの作成に失敗しました: {e}")
@@ -177,23 +188,27 @@ def run_yolo_ane(frame, model):
 
 # --- メイン処理 ---
 def main():
-    # --- 1. YOLOモデルの読み込み (ANE) ---
+    # --- 1. YOLOモデルの読み込み ---
     print(f"[INFO] Neural Engine (ANE) 用のCore MLモデル ({COREML_MODEL_PATH}) を読み込みます...")
     try:
         global model
-        model = YOLO(COREML_MODEL_PATH, task='detect') # task='detect' を明示
+        # 警告(WARNING)回避のため task='detect' を明示
+        model = YOLO(COREML_MODEL_PATH, task='detect')
         print("[INFO] Core MLモデル読み込み完了。")
     except Exception as e:
         print(f"[ERROR] Core MLモデル '{COREML_MODEL_PATH}' の読み込みに失敗: {e}")
         sys.exit()
 
     # --- 2. Discord Botを別スレッドで起動 ---
+    bot_thread = None
     if not (DISCORD_TOKEN and DISCORD_CHANNEL_ID):
         print("[WARN] DISCORD_TOKEN または DISCORD_CHANNEL_ID が設定されていません。")
         print("[WARN] Discord通知機能は無効になります。")
     else:
         print("[INFO] Discord Botをバックグラウンドで起動します...")
-        bot_thread = threading.Thread(target=start_discord_bot, daemon=True)
+        # daemon=True にするとメインスレッド終了時に強制終了されるため、
+        # 確実にシャットダウン処理を行うため daemon=False に変更
+        bot_thread = threading.Thread(target=start_discord_bot, daemon=False)
         bot_thread.start()
         # Botが起動するのを少し待つ
         time.sleep(5) 
@@ -219,7 +234,7 @@ def main():
     last_low_write_time = 0
 
     writer_high = None
-    high_filename = None # ★ イベント録画のファイル名を保持する変数
+    high_filename = None
     high_rec_end_time = 0
     last_high_write_time = 0
     
@@ -236,7 +251,6 @@ def main():
                 print("[ERROR] フレームが読み込めません。")
                 break
             
-            # --- 日時描画 ---
             now_str = datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             cv2.putText(frame, now_str, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                         0.8, (255, 255, 255), 2, cv2.LINE_AA)
@@ -251,7 +265,6 @@ def main():
             # --- 2. イベント録画 (High FPS) ロジック ---
             if last_detection_result:
                 if writer_high is None:
-                    # ★ writer と filename を両方受け取る
                     writer_high, high_filename = create_new_writer(
                         HIGH_FPS_DIR, "event", HIGH_FPS, actual_width, actual_height
                     )
@@ -260,16 +273,16 @@ def main():
             
             if writer_high is not None:
                 if current_time >= high_rec_end_time:
-                    # ★ 録画終了 & Discord通知
+                    # ★ 正常に20秒録画完了 -> Discord通知
                     print("[INFO] イベント録画終了。")
                     writer_high.release()
                     
-                    # ★ Discord送信関数を呼び出す
                     if high_filename:
-                        send_discord_video(high_filename)
+                        # 送信完了を待たない (False)
+                        send_discord_video(high_filename, wait_for_completion=False)
                     
                     writer_high = None
-                    high_filename = None # リセット
+                    high_filename = None
 
                 elif (current_time - last_high_write_time) >= HIGH_FPS_WRITE_INTERVAL:
                     if writer_high.isOpened():
@@ -277,6 +290,7 @@ def main():
                     last_high_write_time = current_time
 
             # --- 3. 常時録画 (Low FPS) ロジック ---
+            # (変更なし)
             if (current_time - last_low_write_time) >= LOW_FPS_WRITE_INTERVAL:
                 if (current_time - low_writer_start_time) >= LOW_FPS_FILE_DURATION:
                     print("[INFO] 3時間が経過。常時録画ファイルをローテーションします。")
@@ -294,23 +308,53 @@ def main():
             # --- 4. 画面表示 ---
             cv2.imshow("Security Feed (Press 'q' to quit)", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                break # 'q' が押されたらループを抜ける
 
+    except KeyboardInterrupt:
+        # Ctrl+C が押された場合もループを抜ける
+        print("\n[INFO] キーボード割り込み (Ctrl+C) を検出しました。")
     finally:
-        # --- 終了処理 ---
+        # --- 終了処理 (ここが改善点) ---
         print("\n[INFO] 処理を終了します...")
         cap.release()
+        
         if writer_low and writer_low.isOpened():
             writer_low.release()
+
+        # ★ 修正点: 途中で終了した場合の録画ファイル送信
         if writer_high and writer_high.isOpened():
+            print("[INFO] イベント録画を中断し、ファイルを保存します...")
             writer_high.release()
+            
+            if high_filename:
+                # ★ 途中で中断したファイルもDiscordに送信する
+                # ★ 送信完了を待つ (True)
+                print(f"[INFO] 中断したイベント動画 ({high_filename}) をDiscordに送信します...")
+                send_discord_video(high_filename, wait_for_completion=True)
+
         cv2.destroyAllWindows()
         
-        # Botスレッドを安全に終了
-        if bot_loop and bot_client:
+        # ★ 修正点: Botの安全なシャットダウン処理
+        if bot_loop and bot_client and bot_client.is_ready():
             print("[INFO] Discord Botをシャットダウンします...")
-            asyncio.run_coroutine_threadsafe(bot_client.close(), bot_loop)
+            
+            # Botのクローズ処理をタスクとして投入
+            future = asyncio.run_coroutine_threadsafe(bot_client.close(), bot_loop)
+            try:
+                # クローズ処理が完了するのを待つ (タイムアウト10秒)
+                future.result(timeout=10.0)
+                print("[INFO] Discord Botのシャットダウン完了。")
+            except Exception as e:
+                print(f"[WARN] Botのシャットダウン中にエラー/タイムアウト: {e}")
+
+            # Botスレッドのイベントループを停止する
+            if bot_loop.is_running():
+                bot_loop.call_soon_threadsafe(bot_loop.stop)
         
+        if bot_thread:
+            print("[INFO] Botスレッドの終了を待機しています...")
+            bot_thread.join() # スレッドが完全に終了するのを待つ
+
         print("[INFO] 完了。")
 
 if __name__ == "__main__":
