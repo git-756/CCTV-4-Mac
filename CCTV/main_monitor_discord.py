@@ -39,7 +39,7 @@ LOW_FPS_DIR = os.getenv("LOW_FPS_DIR", "recordings_low")
 # --- 3. イベント録画 (High FPS) の設定 ---
 HIGH_FPS = float(os.getenv("HIGH_FPS", "5.0"))
 HIGH_FPS_WRITE_INTERVAL = 1.0 / HIGH_FPS
-HIGH_FPS_DURATION = int(os.getenv("HIGH_FPS_DURATION", "20"))
+HIGH_FPS_DURATION = int(os.getenv("HIGH_FPS_DURATION", "10"))
 HIGH_FPS_DIR = os.getenv("HIGH_FPS_DIR", "recordings_high")
 
 # --- 4. YOLO (ultralytics) の設定 ---
@@ -48,7 +48,9 @@ TARGET_CLASS_ID = int(os.getenv("TARGET_CLASS_ID", "0"))
 CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", "0.5"))
 
 # --- 5. macOS用の録画設定 ---
-FOURCC = cv2.VideoWriter_fourcc(*'mp4v')
+VIDEO_FOURCC_STR = os.getenv("VIDEO_FOURCC", "avc1")
+FOURCC = cv2.VideoWriter_fourcc(*VIDEO_FOURCC_STR)
+#FOURCC = cv2.VideoWriter_fourcc(*'mp4v')
 
 # --- 6. フォルダ作成 ---
 os.makedirs(LOW_FPS_DIR, exist_ok=True)
