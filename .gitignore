@@ -9,6 +9,14 @@ wheels/
 # venv
 .venv
 
-# pt, jpg
+# 学習モデル、動画など
 *.pt
+mlpackage/
+recordings_high/
+recordings_low/
 *.jpg
+*.mp4
+
+# test
+yolo_test/
+usb_cam/
