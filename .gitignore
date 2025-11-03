@@ -9,9 +9,12 @@ wheels/
 # venv
 .venv
 
+# 設定ファイル
+.env
+
 # 学習モデル、動画など
 *.pt
-mlpackage/
+yolov8n.mlpackage
 recordings_high/
 recordings_low/
 *.jpg

@@ -11,6 +11,8 @@ dependencies = [
     "ultralytics>=8.3.203",
     "opencv-python>=4.12.0.88",
     "coremltools>=8.3.0",
+    "discord-py>=2.6.4",
+    "python-dotenv>=1.2.1",
 ]
 readme = "README.md"
 requires-python = ">= 3.8"
