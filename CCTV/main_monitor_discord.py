@@ -289,12 +289,12 @@ def main():
                 if writer_low.isOpened():
                     writer_low.write(frame)
                 last_low_write_time = current_time
-
+            """
             # --- 4. 画面表示 ---
             cv2.imshow("Security Feed (Press 'q' to quit)", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-
+            """
     except KeyboardInterrupt:
         print("\n[INFO] キーボード割り込み (Ctrl+C) を検出しました。")
     finally:
