@@ -1,4 +1,4 @@
-# main_monitor_with_config.py
+# main_monitor_with_filtering.py
 import cv2
 import time
 import datetime
@@ -39,7 +39,7 @@ LOW_FPS_DIR = os.getenv("LOW_FPS_DIR", "recordings_low")
 # --- 3. イベント録画 (High FPS) の設定 ---
 HIGH_FPS = float(os.getenv("HIGH_FPS", "5.0"))
 HIGH_FPS_WRITE_INTERVAL = 1.0 / HIGH_FPS
-HIGH_FPS_DURATION = int(os.getenv("HIGH_FPS_DURATION", "10"))
+HIGH_FPS_DURATION = int(os.getenv("HIGH_FPS_DURATION", "20"))
 HIGH_FPS_DIR = os.getenv("HIGH_FPS_DIR", "recordings_high")
 
 # --- 4. YOLO (ultralytics) の設定 ---
@@ -47,12 +47,14 @@ COREML_MODEL_PATH = os.getenv("COREML_MODEL_PATH", "yolov8n.mlpackage")
 TARGET_CLASS_ID = int(os.getenv("TARGET_CLASS_ID", "0"))
 CONF_THRESHOLD = float(os.getenv("CONF_THRESHOLD", "0.5"))
 
-# --- 5. macOS用の録画設定 ---
-VIDEO_FOURCC_STR = os.getenv("VIDEO_FOURCC", "avc1")
+# --- 5. 録画コーデック設定 ---
+VIDEO_FOURCC_STR = os.getenv("VIDEO_FOURCC", "mp4v") # デフォルトをmp4vに
 FOURCC = cv2.VideoWriter_fourcc(*VIDEO_FOURCC_STR)
-#FOURCC = cv2.VideoWriter_fourcc(*'mp4v')
 
-# --- 6. フォルダ作成 ---
+# --- ★ 6. 誤認識対策 (案1) ---
+DETECTION_STREAK_THRESHOLD = int(os.getenv("DETECTION_STREAK_THRESHOLD", "3"))
+
+# --- 7. フォルダ作成 ---
 os.makedirs(LOW_FPS_DIR, exist_ok=True)
 os.makedirs(HIGH_FPS_DIR, exist_ok=True)
 
@@ -61,24 +63,18 @@ bot_loop = None
 bot_client = None
 
 # -----------------------------------------------
-# --- Discord Bot 関連 (別スレッドで実行) ---
-# (このセクションは変更ありません)
+# --- Discord Bot 関連 (変更なし) ---
 # -----------------------------------------------
-
 def start_discord_bot():
     """Discord Botを起動し、別スレッドのイベントループで実行する"""
     global bot_loop, bot_client
-    
     bot_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(bot_loop)
-
     intents = discord.Intents.default()
     bot_client = discord.Client(intents=intents)
-
     @bot_client.event
     async def on_ready():
         print(f"\n[INFO] Discord Botがバックグラウンドで起動しました。({bot_client.user})\n")
-
     try:
         bot_loop.run_until_complete(bot_client.start(DISCORD_TOKEN))
     except discord.errors.LoginFailure:
@@ -86,16 +82,13 @@ def start_discord_bot():
     except Exception as e:
         if bot_loop.is_running():
             print(f"[ERROR] Discord Botスレッドでエラー: {e}")
-            
     print("[INFO] Discord Botスレッドが終了しました。")
-
 
 async def async_send_file(filepath):
     """(非同期) 実際のファイル送信処理"""
     if not bot_client or not DISCORD_CHANNEL_ID:
         print("[ERROR] Discord Botが初期化されていないか、チャンネルIDがありません。")
         return
-
     try:
         channel = bot_client.get_channel(DISCORD_CHANNEL_ID)
         if channel:
@@ -131,12 +124,9 @@ def send_discord_video(filepath, wait_for_completion=False):
     else:
         print("[WARN] Discord Botがまだ準備できていないため、送信をスキップしました。")
 
-
 # -----------------------------------------------
-# --- OpenCV / YOLO 関連 (メインスレッド) ---
-# (このセクションは変更ありません)
+# --- OpenCV / YOLO 関連 (変更なし) ---
 # -----------------------------------------------
-
 def create_new_writer(directory, prefix, fps, width, height):
     """VideoWriterとファイル名を返す"""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -154,15 +144,13 @@ def create_new_writer(directory, prefix, fps, width, height):
 def run_yolo_ane(frame, model):
     """YOLO実行"""
     person_detected = False
-    
     results = model.predict(
         frame,
         classes=[TARGET_CLASS_ID],
-        conf=CONF_THRESHOLD, # .envから読み込んだ値を使用
+        conf=CONF_THRESHOLD,
         verbose=False
     )
     result = results[0]
-
     if len(result.boxes) > 0:
         person_detected = True
         for box in result.boxes:
@@ -199,7 +187,6 @@ def main():
         time.sleep(5) 
 
     # --- 3. カメラの初期化 ---
-    # .envから読み込んだ設定値を使用
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         print(f"[ERROR] カメラ {CAMERA_INDEX} を開けません。")
@@ -213,7 +200,6 @@ def main():
     print(f"[INFO] カメラ起動。解像度: {actual_width}x{actual_height}")
 
     # --- 4. 録画ライターと状態変数の初期化 ---
-    # .envから読み込んだ設定値を使用
     writer_low, _ = create_new_writer(LOW_FPS_DIR, "low_fps", LOW_FPS, actual_width, actual_height)
     if writer_low is None: return
     
@@ -227,7 +213,11 @@ def main():
     
     detection_interval = 1.0 / HIGH_FPS
     last_detection_time = 0
-    last_detection_result = False
+    
+    # --- ★★★ 案1：誤認識対策用の変数を追加 ★★★ ---
+    detection_streak_counter = 0 # 連続検出カウンター
+    is_person_confirmed_state = False # イベント確定フラグ
+    # ------------------------------------------------
 
     print("[INFO] 録画と監視を開始します。'q' キーで終了します。")
 
@@ -244,23 +234,54 @@ def main():
 
             current_time = time.time()
             
+            person_detected_this_frame = False # このフレームで検出されたか
+
             # --- 1. 検出ロジック ---
             if (current_time - last_detection_time) >= detection_interval:
                 last_detection_time = current_time
-                last_detection_result, frame = run_yolo_ane(frame, model)
+                # ★ 検出結果をローカル変数に格納
+                person_detected_this_frame, frame = run_yolo_ane(frame, model)
+
+                # --- ★★★ 案1：連続検出ロジック ★★★ ---
+                if person_detected_this_frame:
+                    # 人が検出された -> カウンターを増やす
+                    detection_streak_counter += 1
+                    
+                    if not is_person_confirmed_state and detection_streak_counter >= DETECTION_STREAK_THRESHOLD:
+                        # ★閾値を超えた！ イベント確定
+                        print(f"[INFO] 検出が {detection_streak_counter} 回続きました。イベントを確定します。")
+                        is_person_confirmed_state = True
+                
+                else:
+                    # 人が検出されなかった
+                    if detection_streak_counter > 0:
+                        # 連続検出が途切れた
+                        print(f"[INFO] 検出が途切れました (Streak: {detection_streak_counter})。リセットします。")
+                    detection_streak_counter = 0
+                    # (is_person_confirmed_state は録画終了時までリセットしない)
+                # ----------------------------------------
             
             # --- 2. イベント録画 (High FPS) ロジック ---
-            if last_detection_result:
+            
+            # (A) イベントが確定されているか？
+            if is_person_confirmed_state:
+                
+                # (B) 録画がまだ開始されていなかったら、開始する
                 if writer_high is None:
                     writer_high, high_filename = create_new_writer(
                         HIGH_FPS_DIR, "event", HIGH_FPS, actual_width, actual_height
                     )
-                # .envから読み込んだ HIGH_FPS_DURATION を使用
-                high_rec_end_time = current_time + HIGH_FPS_DURATION
+                
+                # (C) ★このフレームで「実際に」人が検出されていたら、録画時間を延長する
+                if person_detected_this_frame:
+                    high_rec_end_time = current_time + HIGH_FPS_DURATION
             
+            # (D) 録画中の処理 (イベント確定中)
             if writer_high is not None:
+                
+                # (E) 録画時間が延長されず、タイマーが切れたら...
                 if current_time >= high_rec_end_time:
-                    print("[INFO] イベント録画終了。")
+                    print("[INFO] イベント録画終了 (グレースピリオド経過)。")
                     writer_high.release()
                     
                     if high_filename:
@@ -268,15 +289,20 @@ def main():
                     
                     writer_high = None
                     high_filename = None
-
+                    
+                    # --- ★★★ イベント状態をリセット ★★★ ---
+                    print("[INFO] イベント状態をリセットし、監視を再開します。")
+                    is_person_confirmed_state = False
+                    detection_streak_counter = 0
+                
+                # (F) 録画中なので、フレームを書き込む
                 elif (current_time - last_high_write_time) >= HIGH_FPS_WRITE_INTERVAL:
                     if writer_high.isOpened():
                         writer_high.write(frame)
                     last_high_write_time = current_time
 
-            # --- 3. 常時録画 (Low FPS) ロジック ---
+            # --- 3. 常時録画 (Low FPS) ロジック (変更なし) ---
             if (current_time - last_low_write_time) >= LOW_FPS_WRITE_INTERVAL:
-                # .envから読み込んだ LOW_FPS_FILE_DURATION を使用
                 if (current_time - low_writer_start_time) >= LOW_FPS_FILE_DURATION:
                     print("[INFO] 3時間が経過。常時録画ファイルをローテーションします。")
                     writer_low.release()
@@ -289,12 +315,14 @@ def main():
                 if writer_low.isOpened():
                     writer_low.write(frame)
                 last_low_write_time = current_time
-            """
+
             # --- 4. 画面表示 ---
+            """
             cv2.imshow("Security Feed (Press 'q' to quit)", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             """
+
     except KeyboardInterrupt:
         print("\n[INFO] キーボード割り込み (Ctrl+C) を検出しました。")
     finally:
