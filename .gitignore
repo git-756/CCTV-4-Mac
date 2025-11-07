@@ -19,6 +19,7 @@ recordings_high/
 recordings_low/
 *.jpg
 *.mp4
+runs/
 
 # test
 yolo_test/
